@@ -1,0 +1,8 @@
+{
+  "language": "typescript",
+  "app": "npx ts-node main.ts",
+  "terraformProviders": [
+    "hashicorp/aws@~> 5.0"
+  ],
+  "projectId": "25c9b395-f2c9-48be-933f-2a17af1f2bfa"
+}

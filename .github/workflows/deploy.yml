@@ -1,0 +1,99 @@
+name: Deploy to AWS ECS
+
+on:
+  push:
+    branches:
+      - main  
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      APP_NAME: ${{ secrets.APP_NAME }}
+      CPU: ${{ secrets.CPU }}
+      MEMORY: ${{ secrets.MEMORY }}
+      CONTAINER_PORT: ${{ secrets.CONTAINER_PORT }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push Docker image
+        working-directory: APP
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ env.APP_NAME }}
+        run: |
+          docker build -t $ECR_REPOSITORY:latest .
+          docker tag $ECR_REPOSITORY:latest $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+      - name: Install CDKTF dependencies
+        working-directory: IAC
+        run: |
+          npm install
+          npm install -g cdktf-cli@0.20.12
+          npx cdktf get
+
+      - name: Synthesize and Deploy
+        working-directory: IAC
+        run: |
+          npx cdktf synth
+          cd cdktf.out/stacks/${{ env.APP_NAME }}-stack
+          
+          terraform init -reconfigure
+          
+          # Only import resources if they exist in AWS but NOT in state
+          # Check state first to avoid "already managed" errors
+          
+          if ! terraform state show aws_iam_role.ecsTaskRole >/dev/null 2>&1; then
+            aws iam get-role --role-name "${{ env.APP_NAME }}-task-role" >/dev/null 2>&1 && \
+              terraform import aws_iam_role.ecsTaskRole "${{ env.APP_NAME }}-task-role" || true
+          fi
+          
+          if ! terraform state show aws_security_group.ecsSg >/dev/null 2>&1; then
+            SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=${{ env.APP_NAME }}-sg" --query "SecurityGroups[0].GroupId" --output text 2>/dev/null)
+            [ "$SG_ID" != "None" ] && [ -n "$SG_ID" ] && terraform import aws_security_group.ecsSg "$SG_ID" || true
+          fi
+          
+          if ! terraform state show aws_ecs_cluster.cluster >/dev/null 2>&1; then
+            aws ecs describe-clusters --clusters "${{ env.APP_NAME }}-cluster" --query "clusters[?status=='ACTIVE'].clusterName" --output text 2>/dev/null | grep -q "${{ env.APP_NAME }}" && \
+              terraform import aws_ecs_cluster.cluster "${{ env.APP_NAME }}-cluster" || true
+          fi
+          
+          if ! terraform state show aws_ecs_service.service >/dev/null 2>&1; then
+            aws ecs describe-services --cluster "${{ env.APP_NAME }}-cluster" --services "${{ env.APP_NAME }}-service" --query "services[?status=='ACTIVE'].serviceName" --output text 2>/dev/null | grep -q "${{ env.APP_NAME }}" && \
+              terraform import aws_ecs_service.service "${{ env.APP_NAME }}-cluster/${{ env.APP_NAME }}-service" || true
+          fi
+          
+          terraform apply -auto-approve
+
+      - name: Force ECS service update
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.APP_NAME }}-cluster \
+            --service ${{ env.APP_NAME }}-service \
+            --force-new-deployment

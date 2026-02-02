@@ -1,0 +1,27 @@
+{
+  "name": "iac",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "cdktf": "^0.20.12",
+    "@cdktf/provider-aws": "^19.65.1",
+    "constructs": "^10.4.5",
+    "dotenv": "^17.2.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "ts-node": "^10.9.2"
+  },
+  "scripts": {
+    "build": "tsc",
+    "synth": "cdktf synth",
+    "deploy": "cdktf deploy --auto-approve"
+  }
+}
